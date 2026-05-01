@@ -84,6 +84,22 @@ impl Drop for PerfCounter {
 }
 
 pub fn discover_pmu_events(sysfs_root: &Path) -> Vec<PmuEvent> {
+    discover_pmu_events_for_roots(sysfs_root, Path::new("/sys/devices/system/cpu"))
+}
+
+pub fn discover_pmu_events_for_roots(
+    event_source_root: &Path,
+    sys_cpu_root: &Path,
+) -> Vec<PmuEvent> {
+    let intel_events = discover_intel_imc_events(event_source_root);
+    if !intel_events.is_empty() {
+        return intel_events;
+    }
+
+    discover_amd_core_memory_events(event_source_root, sys_cpu_root)
+}
+
+fn discover_intel_imc_events(sysfs_root: &Path) -> Vec<PmuEvent> {
     let mut events = Vec::new();
 
     let Ok(entries) = fs::read_dir(sysfs_root) else {
@@ -136,6 +152,47 @@ pub fn discover_pmu_events(sysfs_root: &Path) -> Vec<PmuEvent> {
         left.controller
             .cmp(&right.controller)
             .then_with(|| left.name.cmp(&right.name))
+    });
+    events
+}
+
+fn discover_amd_core_memory_events(event_source_root: &Path, sys_cpu_root: &Path) -> Vec<PmuEvent> {
+    let cpu_pmu = event_source_root.join("cpu");
+    let Some(event_type) = read_trimmed(&cpu_pmu.join("type")).and_then(|value| parse_u32(&value))
+    else {
+        return Vec::new();
+    };
+    let formats = read_formats(&cpu_pmu.join("format"));
+    let Some(online_cpus) =
+        read_trimmed(&sys_cpu_root.join("online")).and_then(|value| parse_cpu_list(&value))
+    else {
+        return Vec::new();
+    };
+
+    let mut events = Vec::new();
+    for cpu in online_cpus {
+        for spec in ["event=0x44,umask=0x8", "event=0x44,umask=0x40"] {
+            let Some(config) = pack_config(spec, &formats) else {
+                continue;
+            };
+            events.push(PmuEvent {
+                controller: "amd_core_memory_fills".to_string(),
+                name: "data_read".to_string(),
+                event_type,
+                cpu,
+                config,
+                scale: 64.0,
+                unit: "B".to_string(),
+            });
+        }
+    }
+
+    events.sort_by(|left, right| {
+        left.controller
+            .cmp(&right.controller)
+            .then_with(|| left.name.cmp(&right.name))
+            .then_with(|| left.cpu.cmp(&right.cpu))
+            .then_with(|| left.config.cmp(&right.config))
     });
     events
 }
@@ -235,7 +292,7 @@ impl PmuReader {
     pub fn open(sysfs_root: &Path) -> Result<Self, String> {
         let events = discover_pmu_events(sysfs_root);
         if events.is_empty() {
-            return Err("no Intel uncore IMC free-running PMU events found".to_string());
+            return Err("no memory bandwidth PMU events found".to_string());
         }
 
         let mut counters = Vec::new();
@@ -253,7 +310,8 @@ impl PmuReader {
     }
 
     pub fn sample(&self) -> Result<Vec<ControllerSample>, String> {
-        let mut by_controller = BTreeMap::<String, ControllerSample>::new();
+        let mut events = Vec::new();
+        let mut raw_values = Vec::new();
 
         for counter in &self.counters {
             let raw = read_counter(counter.fd).map_err(|error| {
@@ -262,24 +320,53 @@ impl PmuReader {
                     counter.event.controller, counter.event.name
                 )
             })?;
-            let value = CounterValue::new(raw, counter.event.scale, &counter.event.unit);
-            let sample = by_controller
-                .entry(counter.event.controller.clone())
-                .or_insert_with(|| ControllerSample {
-                    controller: counter.event.controller.clone(),
-                    ..ControllerSample::default()
-                });
-
-            match counter.event.name.as_str() {
-                "data_read" => sample.read = Some(value),
-                "data_write" => sample.write = Some(value),
-                "data_total" => sample.total = Some(value),
-                _ => {}
-            }
+            events.push(counter.event.clone());
+            raw_values.push(raw);
         }
 
-        Ok(by_controller.into_values().collect())
+        samples_from_counter_values(&events, &raw_values)
     }
+}
+
+pub fn samples_from_counter_values(
+    events: &[PmuEvent],
+    raw_values: &[u64],
+) -> Result<Vec<ControllerSample>, String> {
+    if events.len() != raw_values.len() {
+        return Err("event and counter value lengths differ".to_string());
+    }
+
+    let mut by_controller = BTreeMap::<String, ControllerSample>::new();
+    for (event, raw) in events.iter().zip(raw_values.iter().copied()) {
+        let value = CounterValue::new(raw, event.scale, &event.unit);
+        let sample = by_controller
+            .entry(event.controller.clone())
+            .or_insert_with(|| ControllerSample {
+                controller: event.controller.clone(),
+                ..ControllerSample::default()
+            });
+
+        match event.name.as_str() {
+            "data_read" => add_counter_value(&mut sample.read, value)?,
+            "data_write" => add_counter_value(&mut sample.write, value)?,
+            "data_total" => add_counter_value(&mut sample.total, value)?,
+            _ => {}
+        }
+    }
+
+    Ok(by_controller.into_values().collect())
+}
+
+fn add_counter_value(slot: &mut Option<CounterValue>, value: CounterValue) -> Result<(), String> {
+    if let Some(existing) = slot {
+        if existing.scale != value.scale || existing.unit != value.unit {
+            return Err("cannot combine counter values with different units".to_string());
+        }
+        existing.raw = existing.raw.wrapping_add(value.raw);
+    } else {
+        *slot = Some(value);
+    }
+    Ok(())
 }
 
 fn read_formats(format_root: &Path) -> Vec<EventFormat> {
@@ -290,7 +377,7 @@ fn read_formats(format_root: &Path) -> Vec<EventFormat> {
         .filter_map(|entry| {
             let name = entry.file_name().to_string_lossy().to_string();
             let value = read_trimmed(&entry.path())?;
-            let range = value.strip_prefix("config:")?;
+            let range = value.strip_prefix("config:")?.split(',').next()?;
             let (start_bit, end_bit) = parse_bit_range(range)?;
             Some(EventFormat {
                 name,
@@ -321,6 +408,21 @@ fn parse_first_cpu(value: &str) -> Option<i32> {
         .trim()
         .parse()
         .ok()
+}
+
+fn parse_cpu_list(value: &str) -> Option<Vec<i32>> {
+    let mut cpus = Vec::new();
+    for part in value.split(',').filter(|part| !part.trim().is_empty()) {
+        let part = part.trim();
+        if let Some((start, end)) = part.split_once('-') {
+            let start = start.parse::<i32>().ok()?;
+            let end = end.parse::<i32>().ok()?;
+            cpus.extend(start..=end);
+        } else {
+            cpus.push(part.parse().ok()?);
+        }
+    }
+    (!cpus.is_empty()).then_some(cpus)
 }
 
 fn read_trimmed(path: &Path) -> Option<String> {
@@ -474,6 +576,69 @@ mod tests {
         assert_eq!(events[0].config, 0x20ff);
         assert_eq!(events[0].scale, 6.103515625e-5);
         assert_eq!(events[0].unit, "MiB");
+    }
+
+    #[test]
+    fn discovers_amd_core_memory_fill_events_from_cpu_pmu() {
+        let temp = TempDir::new().unwrap();
+        let event_source_root = temp.path().join("event_source");
+        let sys_cpu_root = temp.path().join("system_cpu");
+        let cpu = event_source_root.join("cpu");
+        write(&cpu.join("type"), "0\n");
+        write(&cpu.join("format/event"), "config:0-7,32-35\n");
+        write(&cpu.join("format/umask"), "config:8-15\n");
+        write(&sys_cpu_root.join("online"), "0-1\n");
+
+        let events = discover_pmu_events_for_roots(&event_source_root, &sys_cpu_root);
+
+        assert_eq!(events.len(), 4);
+        assert!(events
+            .iter()
+            .all(|event| event.controller == "amd_core_memory_fills"));
+        assert!(events.iter().all(|event| event.name == "data_read"));
+        assert!(events.iter().all(|event| event.scale == 64.0));
+        assert!(events.iter().all(|event| event.unit == "B"));
+        assert!(events
+            .iter()
+            .any(|event| event.cpu == 0 && event.config == 0x0844));
+        assert!(events
+            .iter()
+            .any(|event| event.cpu == 0 && event.config == 0x4044));
+        assert!(events
+            .iter()
+            .any(|event| event.cpu == 1 && event.config == 0x0844));
+        assert!(events
+            .iter()
+            .any(|event| event.cpu == 1 && event.config == 0x4044));
+    }
+
+    #[test]
+    fn sums_duplicate_counter_values_for_one_controller() {
+        let events = vec![
+            PmuEvent {
+                controller: "amd_core_memory_fills".to_string(),
+                name: "data_read".to_string(),
+                event_type: 0,
+                cpu: 0,
+                config: 0x0844,
+                scale: 64.0,
+                unit: "B".to_string(),
+            },
+            PmuEvent {
+                controller: "amd_core_memory_fills".to_string(),
+                name: "data_read".to_string(),
+                event_type: 0,
+                cpu: 1,
+                config: 0x0844,
+                scale: 64.0,
+                unit: "B".to_string(),
+            },
+        ];
+
+        let samples = samples_from_counter_values(&events, &[10, 25]).unwrap();
+
+        assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0].read.as_ref().unwrap().raw, 35);
     }
 
     #[test]
