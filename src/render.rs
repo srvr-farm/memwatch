@@ -5,6 +5,8 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 use std::fmt::Write;
 
+const MIN_PID_WIDTH: usize = 8;
+
 pub fn format_text_report(snapshot: &Snapshot) -> String {
     let mut report = String::new();
 
@@ -107,10 +109,11 @@ pub fn format_text_report(snapshot: &Snapshot) -> String {
     }
 
     writeln!(report, "top_rss:").unwrap();
+    let pid_width = top_rss_pid_width(snapshot);
     for process in &snapshot.processes {
         writeln!(
             report,
-            "  {:>6} {:<24} {:>10} {:>7}",
+            "  {:>pid_width$} {:<24} {:>10} {:>7}",
             process.pid,
             process.name,
             format_bytes(process.rss_bytes),
@@ -306,16 +309,17 @@ fn bandwidth_text(snapshot: &Snapshot) -> String {
 
 fn process_text(snapshot: &Snapshot) -> String {
     let mut text = String::new();
+    let pid_width = top_rss_pid_width(snapshot);
     writeln!(
         text,
-        "{:>6} {:<22} {:>10} {:>7}",
+        "{:>pid_width$} {:<22} {:>10} {:>7}",
         "pid", "name", "rss", "mem"
     )
     .unwrap();
     for process in &snapshot.processes {
         writeln!(
             text,
-            "{:>6} {:<22} {:>10} {:>7}",
+            "{:>pid_width$} {:<22} {:>10} {:>7}",
             process.pid,
             truncate(&process.name, 22),
             format_bytes(process.rss_bytes),
@@ -324,6 +328,16 @@ fn process_text(snapshot: &Snapshot) -> String {
         .unwrap();
     }
     text
+}
+
+fn top_rss_pid_width(snapshot: &Snapshot) -> usize {
+    snapshot
+        .processes
+        .iter()
+        .map(|process| process.pid.to_string().len())
+        .max()
+        .unwrap_or(3)
+        .max(MIN_PID_WIDTH)
 }
 
 fn format_bytes(bytes: u64) -> String {
@@ -441,5 +455,36 @@ mod tests {
         assert!(report.contains("top_rss:"));
         assert!(report.contains("diagnostics:"));
         assert!(report.contains("worker"));
+    }
+
+    #[test]
+    fn top_rss_name_column_aligns_for_wide_pids() {
+        let snapshot = Snapshot {
+            memory: MemorySummary::default(),
+            dmi: MemoryDetails::default(),
+            bandwidth: None,
+            processes: vec![
+                ProcessMemory {
+                    pid: 7,
+                    name: "small".to_string(),
+                    uid: None,
+                    rss_bytes: 1024,
+                    rss_percent: Some(1.0),
+                },
+                ProcessMemory {
+                    pid: 1_455_260,
+                    name: "large".to_string(),
+                    uid: None,
+                    rss_bytes: 2048,
+                    rss_percent: Some(2.0),
+                },
+            ],
+            diagnostics: vec![],
+        };
+
+        let text = process_text(&snapshot);
+        let lines = text.lines().collect::<Vec<_>>();
+
+        assert_eq!(lines[1].find("small"), lines[2].find("large"));
     }
 }
