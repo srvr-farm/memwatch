@@ -96,7 +96,8 @@ impl Sampler {
     fn sample_at(&mut self, now: Instant) -> Snapshot {
         let memory_info = memory::read_meminfo(&self.meminfo_path);
         let memory = memory::summarize(&memory_info);
-        let processes = processes::scan_proc(&self.proc_root, memory.total_bytes, self.process_limit);
+        let processes =
+            processes::scan_proc(&self.proc_root, memory.total_bytes, self.process_limit);
         let mut diagnostics = Vec::new();
 
         if memory.total_bytes == 0 {
@@ -167,7 +168,9 @@ mod tests {
 
         assert_eq!(tracker.update(first, now), None);
 
-        let snapshot = tracker.update(second, now + Duration::from_secs(3)).unwrap();
+        let snapshot = tracker
+            .update(second, now + Duration::from_secs(3))
+            .unwrap();
         assert_eq!(snapshot.read_mib_s, Some(20.0));
     }
 

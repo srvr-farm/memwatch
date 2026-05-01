@@ -421,7 +421,7 @@ fn read_counter(fd: RawFd) -> std::io::Result<u64> {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 struct PerfEventAttr {
     type_: u32,
     size: u32,
@@ -434,24 +434,6 @@ struct PerfEventAttr {
     bp_type: u32,
     config1: u64,
     config2: u64,
-}
-
-impl Default for PerfEventAttr {
-    fn default() -> Self {
-        Self {
-            type_: 0,
-            size: 0,
-            config: 0,
-            sample_period_or_freq: 0,
-            sample_type: 0,
-            read_format: 0,
-            flags: 0,
-            wakeup: 0,
-            bp_type: 0,
-            config1: 0,
-            config2: 0,
-        }
-    }
 }
 
 #[cfg(test)]

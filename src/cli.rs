@@ -44,6 +44,8 @@ mod tests {
     #[test]
     fn rejects_zero_interval() {
         let error = Cli::try_parse_from(["memwatch", "--interval", "0s"]).unwrap_err();
-        assert!(error.to_string().contains("interval must be greater than zero"));
+        assert!(error
+            .to_string()
+            .contains("interval must be greater than zero"));
     }
 }

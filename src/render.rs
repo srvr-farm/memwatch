@@ -9,7 +9,12 @@ pub fn format_text_report(snapshot: &Snapshot) -> String {
     let mut report = String::new();
 
     writeln!(report, "memory:").unwrap();
-    writeln!(report, "  total: {}", format_bytes(snapshot.memory.total_bytes)).unwrap();
+    writeln!(
+        report,
+        "  total: {}",
+        format_bytes(snapshot.memory.total_bytes)
+    )
+    .unwrap();
     writeln!(
         report,
         "  used: {} ({})",
@@ -23,7 +28,12 @@ pub fn format_text_report(snapshot: &Snapshot) -> String {
         format_bytes(snapshot.memory.available_bytes)
     )
     .unwrap();
-    writeln!(report, "  free: {}", format_bytes(snapshot.memory.free_bytes)).unwrap();
+    writeln!(
+        report,
+        "  free: {}",
+        format_bytes(snapshot.memory.free_bytes)
+    )
+    .unwrap();
     writeln!(
         report,
         "  buffers_cache: {} buffers, {} cache",
@@ -296,7 +306,12 @@ fn bandwidth_text(snapshot: &Snapshot) -> String {
 
 fn process_text(snapshot: &Snapshot) -> String {
     let mut text = String::new();
-    writeln!(text, "{:>6} {:<22} {:>10} {:>7}", "pid", "name", "rss", "mem").unwrap();
+    writeln!(
+        text,
+        "{:>6} {:<22} {:>10} {:>7}",
+        "pid", "name", "rss", "mem"
+    )
+    .unwrap();
     for process in &snapshot.processes {
         writeln!(
             text,

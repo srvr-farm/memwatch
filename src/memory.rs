@@ -85,8 +85,8 @@ pub fn summarize(info: &MemoryInfo) -> MemorySummary {
         .saturating_add(info.sreclaimable_bytes)
         .saturating_sub(info.shmem_bytes);
     let swap_used_bytes = info.swap_total_bytes.saturating_sub(info.swap_free_bytes);
-    let used_percent = (info.total_bytes > 0)
-        .then_some((used_bytes as f64 / info.total_bytes as f64) * 100.0);
+    let used_percent =
+        (info.total_bytes > 0).then_some((used_bytes as f64 / info.total_bytes as f64) * 100.0);
 
     MemorySummary {
         total_bytes: info.total_bytes,
