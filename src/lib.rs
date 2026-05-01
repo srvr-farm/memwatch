@@ -1,3 +1,4 @@
+pub mod bandwidth;
 pub mod cli;
 pub mod dmi;
 pub mod memory;
