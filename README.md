@@ -1,10 +1,29 @@
-# memwatch
+# memwatch - Linux Memory Monitor and Bandwidth TUI
 
-`memwatch` is a read-only terminal monitor for Linux memory usage, installed
-DIMM details, memory bandwidth, and the processes using the most resident memory.
+`memwatch` is a read-only Linux memory monitor and terminal TUI for RAM usage,
+installed DIMM details, memory bandwidth, and the processes using the most
+resident memory. It is useful when you want a lightweight Rust alternative or
+companion to tools like `free`, `top`, `htop`, `btop`, `vmstat`, `dmidecode`,
+and `perf`.
 
 The default mode is an interactive terminal UI. A `--once` mode is also
 available for scripts, diagnostics, CI logs, and non-interactive environments.
+
+## What You Can Monitor
+
+Use `memwatch` when you want to:
+
+- Monitor Linux memory usage from a terminal, including used, available, free,
+  cache, buffers, swap, dirty pages, and writeback.
+- Find the highest-RSS processes without opening a full process manager.
+- Inspect installed RAM, DIMM slots, memory type, manufacturer, and configured
+  memory speed from SMBIOS/DMI data.
+- Measure memory bandwidth with Linux perf PMU counters when the hardware and
+  kernel expose usable events.
+- Watch Intel uncore IMC memory-controller read/write bandwidth in MiB/s or
+  GiB/s.
+- Debug laptop, desktop, workstation, homelab, and server memory behavior
+  without changing kernel settings or killing processes.
 
 ## Features
 
@@ -20,6 +39,14 @@ available for scripts, diagnostics, CI logs, and non-interactive environments.
 - Provides interactive TUI and one-shot plain-text report modes.
 - Degrades to `N/A` values and diagnostics when optional data sources are
   missing, restricted, or unsupported.
+
+## Keywords
+
+Linux memory monitor, terminal memory monitor, Linux RAM monitor, Rust TUI
+memory monitor, memory bandwidth monitor, RAM bandwidth monitor, Intel uncore
+IMC monitor, Linux perf PMU, `perf_event_open`, top RSS processes, process memory
+usage, DIMM information, memory speed monitor, SMBIOS memory, DMI memory,
+`dmidecode`, `/proc/meminfo`, `/proc` process monitor.
 
 ## Quick Start
 
@@ -428,3 +455,23 @@ Options:
 - `src/snapshot.rs`: combined sampling state.
 - `src/render.rs`: TUI rendering and one-shot text reports.
 - `Makefile`: build, install, capability, and check targets.
+
+## Suggested GitHub Topics
+
+For the repository About sidebar, useful topics would be:
+
+```text
+linux
+rust
+tui
+terminal
+memory-monitor
+ram-monitor
+hardware-monitor
+performance-monitoring
+memory-bandwidth
+perf
+pmu
+dmidecode
+ratatui
+```
