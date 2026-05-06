@@ -91,27 +91,29 @@ pub fn discover_pmu_events_for_roots(
     event_source_root: &Path,
     sys_cpu_root: &Path,
 ) -> Vec<PmuEvent> {
-    let intel_events = discover_intel_imc_events(event_source_root);
-    if !intel_events.is_empty() {
+    let (intel_events, has_intel_imc) = discover_intel_imc_events(event_source_root);
+    if has_intel_imc {
         return intel_events;
     }
 
     discover_amd_core_memory_events(event_source_root, sys_cpu_root)
 }
 
-fn discover_intel_imc_events(sysfs_root: &Path) -> Vec<PmuEvent> {
+fn discover_intel_imc_events(sysfs_root: &Path) -> (Vec<PmuEvent>, bool) {
     let mut events = Vec::new();
+    let mut has_intel_imc = false;
 
     let Ok(entries) = fs::read_dir(sysfs_root) else {
-        return events;
+        return (events, has_intel_imc);
     };
 
     for entry in entries.flatten() {
         let path = entry.path();
         let controller = entry.file_name().to_string_lossy().to_string();
-        if !controller.starts_with("uncore_imc_free_running_") || !path.is_dir() {
+        if !controller.starts_with("uncore_imc_") || !path.is_dir() {
             continue;
         }
+        has_intel_imc = true;
 
         let Some(event_type) = read_trimmed(&path.join("type")).and_then(|value| parse_u32(&value))
         else {
@@ -122,29 +124,22 @@ fn discover_intel_imc_events(sysfs_root: &Path) -> Vec<PmuEvent> {
             .unwrap_or(0);
         let formats = read_formats(&path.join("format"));
 
-        for event_name in ["data_read", "data_write", "data_total"] {
-            let event_path = path.join("events").join(event_name);
-            let Some(event_spec) = read_trimmed(&event_path) else {
-                continue;
-            };
-            let Some(config) = pack_config(&event_spec, &formats) else {
-                continue;
-            };
-            let scale = read_trimmed(&event_path.with_file_name(format!("{event_name}.scale")))
-                .and_then(|value| value.parse::<f64>().ok())
-                .unwrap_or(1.0);
-            let unit = read_trimmed(&event_path.with_file_name(format!("{event_name}.unit")))
-                .unwrap_or_else(|| "count".to_string());
-
-            events.push(PmuEvent {
-                controller: controller.clone(),
-                name: event_name.to_string(),
+        for (event_name, candidates) in [
+            ("data_read", ["data_read", "cas_count_read"].as_slice()),
+            ("data_write", ["data_write", "cas_count_write"].as_slice()),
+            ("data_total", ["data_total"].as_slice()),
+        ] {
+            if let Some(event) = build_pmu_event(
+                &path,
+                &controller,
+                event_name,
+                candidates,
                 event_type,
                 cpu,
-                config,
-                scale,
-                unit,
-            });
+                &formats,
+            ) {
+                events.push(event);
+            }
         }
     }
 
@@ -153,7 +148,44 @@ fn discover_intel_imc_events(sysfs_root: &Path) -> Vec<PmuEvent> {
             .cmp(&right.controller)
             .then_with(|| left.name.cmp(&right.name))
     });
-    events
+    (events, has_intel_imc)
+}
+
+fn build_pmu_event(
+    controller_path: &Path,
+    controller: &str,
+    event_name: &str,
+    source_candidates: &[&str],
+    event_type: u32,
+    cpu: i32,
+    formats: &[EventFormat],
+) -> Option<PmuEvent> {
+    for source_name in source_candidates {
+        let event_path = controller_path.join("events").join(source_name);
+        let Some(event_spec) = read_trimmed(&event_path) else {
+            continue;
+        };
+        let Some(config) = pack_config(&event_spec, formats) else {
+            continue;
+        };
+        let scale = read_trimmed(&event_path.with_file_name(format!("{source_name}.scale")))
+            .and_then(|value| value.parse::<f64>().ok())
+            .unwrap_or(1.0);
+        let unit = read_trimmed(&event_path.with_file_name(format!("{source_name}.unit")))
+            .unwrap_or_else(|| "count".to_string());
+
+        return Some(PmuEvent {
+            controller: controller.to_string(),
+            name: event_name.to_string(),
+            event_type,
+            cpu,
+            config,
+            scale,
+            unit,
+        });
+    }
+
+    None
 }
 
 fn discover_amd_core_memory_events(event_source_root: &Path, sys_cpu_root: &Path) -> Vec<PmuEvent> {
@@ -576,6 +608,68 @@ mod tests {
         assert_eq!(events[0].config, 0x20ff);
         assert_eq!(events[0].scale, 6.103515625e-5);
         assert_eq!(events[0].unit, "MiB");
+    }
+
+    #[test]
+    fn discovers_standard_imc_cas_count_events_from_sysfs() {
+        let temp = TempDir::new().unwrap();
+        let device = temp.path().join("uncore_imc_0");
+        write(&device.join("type"), "12\n");
+        write(&device.join("cpumask"), "0\n");
+        write(&device.join("format/event"), "config:0-7\n");
+        write(&device.join("format/umask"), "config:8-15\n");
+        write(
+            &device.join("events/cas_count_read"),
+            "event=0x04,umask=0x03\n",
+        );
+        write(
+            &device.join("events/cas_count_read.scale"),
+            "6.103515625e-5\n",
+        );
+        write(&device.join("events/cas_count_read.unit"), "MiB\n");
+        write(
+            &device.join("events/cas_count_write"),
+            "event=0x04,umask=0x0c\n",
+        );
+        write(
+            &device.join("events/cas_count_write.scale"),
+            "6.103515625e-5\n",
+        );
+        write(&device.join("events/cas_count_write.unit"), "MiB\n");
+
+        let events = discover_pmu_events(temp.path());
+
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].controller, "uncore_imc_0");
+        assert_eq!(events[0].name, "data_read");
+        assert_eq!(events[0].event_type, 12);
+        assert_eq!(events[0].cpu, 0);
+        assert_eq!(events[0].config, 0x0304);
+        assert_eq!(events[0].scale, 6.103515625e-5);
+        assert_eq!(events[0].unit, "MiB");
+        assert_eq!(events[1].controller, "uncore_imc_0");
+        assert_eq!(events[1].name, "data_write");
+        assert_eq!(events[1].config, 0x0c04);
+    }
+
+    #[test]
+    fn does_not_use_amd_fallback_when_intel_imc_devices_are_present() {
+        let temp = TempDir::new().unwrap();
+        let event_source_root = temp.path().join("event_source");
+        let sys_cpu_root = temp.path().join("system_cpu");
+        let imc = event_source_root.join("uncore_imc_0");
+        write(&imc.join("type"), "12\n");
+        write(&imc.join("cpumask"), "0\n");
+
+        let cpu = event_source_root.join("cpu");
+        write(&cpu.join("type"), "0\n");
+        write(&cpu.join("format/event"), "config:0-7\n");
+        write(&cpu.join("format/umask"), "config:8-15\n");
+        write(&sys_cpu_root.join("online"), "0\n");
+
+        let events = discover_pmu_events_for_roots(&event_source_root, &sys_cpu_root);
+
+        assert!(events.is_empty());
     }
 
     #[test]
