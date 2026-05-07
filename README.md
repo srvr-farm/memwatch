@@ -160,6 +160,32 @@ The Makefile wraps the release build:
 make build
 ```
 
+## Building Packages
+
+Build Debian and RPM packages:
+
+```sh
+make package VERSION=0.1.12
+make check-packages VERSION=0.1.12
+```
+
+Package artifacts are written to `dist/` by default:
+
+- `memwatch_0.1.12_amd64.deb`
+- `memwatch-0.1.12-1.x86_64.rpm`
+
+Both packages install `memwatch` to `/usr/bin/memwatch`, keep the binary
+executable, and run this during package installation:
+
+```sh
+setcap cap_perfmon,cap_dac_read_search+ep /usr/bin/memwatch
+```
+
+Required package build tools:
+
+- `dpkg-deb`, usually provided by the Debian or Ubuntu `dpkg` package.
+- `rpmbuild`, usually provided by the Fedora, RHEL, or Debian `rpm` package.
+
 ## Development Checks
 
 Run the full local check suite:
